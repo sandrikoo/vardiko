@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="theme-color" content="#0e0e0c">
-<title>Atelier Mobile</title>
+<title>Vardiko Mobile</title>
 <link href="https://fonts.googleapis.com/css2?family=Fraunces:ital,wght@0,400;0,900;1,400&family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
 <script src="https://cdn.jsdelivr.net/npm/ag-psd@14.3.2/dist/bundle.js"></script>
 <style>
@@ -112,6 +112,44 @@
   .handle.edge:active, .handle.edge.grabbing {
     transform: scale(1.0);
   }
+
+  /* Floating action buttons that appear during a layer-edit transaction */
+  .edit-actions {
+    position: absolute;
+    display: flex;
+    gap: 14px;
+    pointer-events: none;
+    z-index: 5;
+    opacity: 0;
+    transform: translateY(-4px) scale(0.85);
+    transition: opacity 0.18s ease, transform 0.18s cubic-bezier(0.34, 1.56, 0.64, 1);
+  }
+  .edit-actions.visible {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+    pointer-events: auto;
+  }
+  .edit-action-btn {
+    width: 36px; height: 36px; border-radius: 50%;
+    border: none;
+    display: flex; align-items: center; justify-content: center;
+    box-shadow: 0 3px 10px rgba(0,0,0,0.45), 0 0 0 1px rgba(255,255,255,0.06);
+    font-size: 14px; font-weight: 600;
+    touch-action: none;
+    transition: transform 0.1s ease;
+    padding: 0;
+  }
+  .edit-action-btn:active { transform: scale(0.9); }
+  .edit-action-btn.cancel {
+    background: rgba(28,28,26,0.95);
+    color: var(--ink);
+    backdrop-filter: blur(10px); -webkit-backdrop-filter: blur(10px);
+  }
+  .edit-action-btn.done {
+    background: var(--accent);
+    color: #0e0e0c;
+  }
+  .edit-action-btn svg { width: 16px; height: 16px; stroke-width: 3; }
 
   /* ─── Empty state ──────────────────────────────────────────── */
   .empty {
@@ -427,7 +465,7 @@
 
 <!-- Top bar -->
 <div class="topbar">
-  <div class="brand">Atelier<span>.</span></div>
+  <div class="brand">Vardiko<span>.</span></div>
   <div class="top-spacer"></div>
   <div class="top-msg" id="topMsg">ready</div>
   <button class="top-btn" id="undoBtn" title="Undo">
@@ -441,7 +479,7 @@
 <!-- Stage -->
 <div class="stage" id="stage">
   <div class="empty" id="emptyState">
-    <div class="title">An <em>editor</em><br>in your pocket.</div>
+    <div class="title">vardo ra <em>kacia</em><br>ara?</div>
     <div class="sub">— Tap to begin —</div>
     <button class="big-cta" id="emptyOpenBtn">Open Image</button>
     <div class="empty-hint">PNG · JPG · WEBP · PSD</div>
@@ -458,6 +496,14 @@
       <div class="handle edge" data-dir="s"></div>
       <div class="handle" data-dir="sw"></div>
       <div class="handle edge" data-dir="w"></div>
+    </div>
+    <div class="edit-actions" id="editActions">
+      <button class="edit-action-btn cancel" id="editCancelBtn" aria-label="Cancel">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round"><path d="M18 6L6 18M6 6l12 12"/></svg>
+      </button>
+      <button class="edit-action-btn done" id="editDoneBtn" aria-label="Done">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>
+      </button>
     </div>
   </div>
 </div>
@@ -692,7 +738,7 @@ const $ = (id) => document.getElementById(id);
 // ─── Status / messaging ─────────────────────────────────────────────────
 const topMsg = $('topMsg');
 function msg(text, type) {
-  console.log('[Atelier]', text);
+  console.log('[Vardiko]', text);
   topMsg.textContent = text;
   topMsg.className = 'top-msg' + (type === 'err' ? ' err' : (type === 'ok' ? ' ok' : ''));
 }
@@ -729,7 +775,16 @@ const state = {
   historyIndex: -1,
   maxHistory: 20,
   adjust: { brightness: 100, contrast: 100, saturation: 100, blur: 0 },
-  transform: { dir: null, startPointer: null, startBounds: null, sourceCanvas: null, constrain: true }
+  transform: { dir: null, startPointer: null, startBounds: null, sourceCanvas: null, constrain: true },
+  // Editing-transaction state — when the user starts moving or resizing a layer
+  // we capture a snapshot here and show floating Done/Cancel buttons. Until
+  // the user presses one of those, no other layer can be selected and no
+  // history is pushed.
+  edit: {
+    active: false,
+    layerIndex: -1,
+    snapshot: null   // { canvas (HTMLCanvasElement clone), left, top } captured at edit start
+  }
 };
 
 const layers = { list: [], tree: [], selected: -1, docW: 0, docH: 0 };
@@ -1195,6 +1250,107 @@ function selectLayer(i, opt = {}) {
 }
 
 // ─── Transform handles ──────────────────────────────────────────────────
+// ─── Editing transaction (Done/Cancel for layer move & resize) ──────────
+const editActionsEl = $('editActions');
+
+// Begin an edit — snapshot the current layer state so cancel can restore it.
+// Idempotent: if already editing the same layer, do nothing.
+function beginEdit(layerIndex) {
+  if (state.edit.active && state.edit.layerIndex === layerIndex) return;
+  if (state.edit.active && state.edit.layerIndex !== layerIndex) {
+    // Auto-commit the previous edit before starting a new one
+    commitEdit({ silent: true });
+  }
+  const L = layers.list[layerIndex];
+  if (!L) return;
+  // Deep copy the canvas so cancel can perfectly restore the bitmap
+  const snap = makeCanvas(L.canvas.width, L.canvas.height);
+  snap.getContext('2d').drawImage(L.canvas, 0, 0);
+  state.edit.active = true;
+  state.edit.layerIndex = layerIndex;
+  state.edit.snapshot = { canvas: snap, left: L.left || 0, top: L.top || 0 };
+  updateEditActionsPosition();
+  editActionsEl.classList.add('visible');
+}
+
+// Commit the current edit — push history, clear snapshot, hide buttons
+function commitEdit({ silent = false } = {}) {
+  if (!state.edit.active) return;
+  state.edit.active = false;
+  state.edit.layerIndex = -1;
+  state.edit.snapshot = null;
+  editActionsEl.classList.remove('visible');
+  pushHistory();
+  if (!silent) msg('Saved', 'ok');
+}
+
+// Cancel the current edit — restore the snapshotted state, hide buttons
+function cancelEdit() {
+  if (!state.edit.active) return;
+  const L = layers.list[state.edit.layerIndex];
+  const snap = state.edit.snapshot;
+  if (L && snap) {
+    L.canvas = snap.canvas;
+    L.left = snap.left;
+    L.top = snap.top;
+    renderAll();
+    updateLayersUI();
+  }
+  state.edit.active = false;
+  state.edit.layerIndex = -1;
+  state.edit.snapshot = null;
+  editActionsEl.classList.remove('visible');
+  msg('Cancelled', 'ok');
+}
+
+// Position the Done/Cancel buttons OUTSIDE the layer's bounding box.
+// Preferred placement: centered horizontally below the layer, with a margin.
+// If there's no room below (layer near canvas bottom), flip above the layer.
+// Always clamped to stay inside the visible canvas area.
+function updateEditActionsPosition() {
+  if (!state.edit.active) return;
+  const L = layers.list[state.edit.layerIndex];
+  if (!L) return;
+  const rect = canvas.getBoundingClientRect();
+  const sx = rect.width / canvas.width;
+  const sy = rect.height / canvas.height;
+  const layerLeft   = (L.left || 0) * sx;
+  const layerTop    = (L.top  || 0) * sy;
+  const layerRight  = layerLeft + L.canvas.width  * sx;
+  const layerBottom = layerTop  + L.canvas.height * sy;
+  const layerCenterX = (layerLeft + layerRight) / 2;
+
+  // Row dimensions: 2 buttons × 36px + 14px gap = 86px
+  const ROW_W = 86, ROW_H = 36, MARGIN = 14;
+
+  // Center horizontally on the layer
+  let leftPos = layerCenterX - ROW_W / 2;
+
+  // Prefer below the layer
+  let topPos = layerBottom + MARGIN;
+  // If below would push outside the canvas, try above
+  if (topPos + ROW_H + 4 > rect.height) {
+    topPos = layerTop - ROW_H - MARGIN;
+  }
+  // If above also doesn't fit, fall back to inside the canvas at the bottom edge
+  if (topPos < 4) {
+    topPos = Math.max(4, rect.height - ROW_H - 4);
+  }
+
+  // Clamp horizontally to keep buttons fully on screen
+  leftPos = Math.max(4, Math.min(leftPos, rect.width - ROW_W - 4));
+
+  editActionsEl.style.left = leftPos + 'px';
+  editActionsEl.style.top  = topPos + 'px';
+}
+
+// Wire the buttons
+$('editDoneBtn').addEventListener('click', (e) => { e.stopPropagation(); commitEdit(); });
+$('editCancelBtn').addEventListener('click', (e) => { e.stopPropagation(); cancelEdit(); });
+// Also handle touch explicitly so the press feels instant
+$('editDoneBtn').addEventListener('touchend', (e) => { e.preventDefault(); e.stopPropagation(); commitEdit(); }, { passive: false });
+$('editCancelBtn').addEventListener('touchend', (e) => { e.preventDefault(); e.stopPropagation(); cancelEdit(); }, { passive: false });
+
 function updateHandles() {
   // Show handles whenever a layer is selected and editable — regardless of tool.
   // (Drawing tools still let you draw; tap-to-select on the canvas brings them up.)
@@ -1249,6 +1405,9 @@ function updateHandles() {
     el.style.left = hx + 'px';
     el.style.top  = hy + 'px';
   });
+
+  // Also keep the editing-transaction buttons aligned
+  if (state.edit.active) updateEditActionsPosition();
 }
 
 function resampleCanvas(source, w, h) {
@@ -1305,6 +1464,8 @@ handlesOverlay.querySelectorAll('.handle').forEach(h => {
     const sel = layers.list[layers.selected];
     if (!sel || sel.locked) return;
     h.classList.add('grabbing');
+    // Open an edit transaction (idempotent — same layer = no-op)
+    beginEdit(layers.selected);
     state.transform.dir = h.dataset.dir;
     state.transform.startPointer = getEvtPoint(e);
     state.transform.startBounds = { left: sel.left||0, top: sel.top||0, width: sel.canvas.width, height: sel.canvas.height };
@@ -1352,7 +1513,9 @@ function onTransformEnd() {
   window.removeEventListener('mouseup', onTransformEnd);
   window.removeEventListener('touchmove', onTransformMove);
   window.removeEventListener('touchend', onTransformEnd);
-  if (state.didChange) { pushHistory(); updateLayersUI(); msg('Resized', 'ok'); }
+  // While an edit transaction is open, the user must press Done/Cancel to
+  // commit. Otherwise (defensive — shouldn't happen), push history.
+  if (state.didChange && !state.edit.active) { pushHistory(); updateLayersUI(); msg('Resized', 'ok'); }
   state.didChange = false;
 }
 
@@ -1673,6 +1836,7 @@ function onCanvasStart(e) {
       state.dragLayerIndex = stickyHit;
       state.dragOffsetX = p.x - (L.left||0);
       state.dragOffsetY = p.y - (L.top||0);
+      beginEdit(stickyHit);
       msg('Moving: ' + L.name);
       return;
     }
@@ -1687,8 +1851,13 @@ function onCanvasStart(e) {
       state.dragLayerIndex = r;
       state.dragOffsetX = p.x - (L.left||0);
       state.dragOffsetY = p.y - (L.top||0);
+      beginEdit(r);
       msg('Selected: ' + L.name, 'ok');
-    } else selectLayer(-1, { quiet: true });
+    } else if (!state.edit.active) {
+      // Don't deselect while an edit transaction is open — user must press
+      // Done or Cancel to leave editing mode
+      selectLayer(-1, { quiet: true });
+    }
     return;
   }
   if (state.tool === 'text') {
@@ -1755,7 +1924,10 @@ function onCanvasEnd() {
   if (!state.isDrawing) return;
   state.isDrawing = false; state.snapshot = null; state.dragLayerIndex = -1;
   renderAll();
-  if (state.didChange) pushHistory();
+  // While an edit transaction is open, the user must press Done/Cancel to
+  // commit. Drawing-tool strokes (brush, eraser, etc.) still push history
+  // immediately because they're not part of a move/resize transaction.
+  if (state.didChange && !state.edit.active) pushHistory();
   state.didChange = false;
 }
 
@@ -2719,7 +2891,7 @@ $('saveAsPng').onclick = async () => {
   msg('Saving…');
   try {
     const blob = await canvasToBlob(out, 'image/png');
-    const filename = 'atelier-' + Date.now() + '.png';
+    const filename = 'vardiko-' + Date.now() + '.png';
     const result = await saveBlob(blob, filename);
     if (result === 'shared') msg('Shared!', 'ok');
     else if (result === 'cancelled') msg('Save cancelled');
@@ -2771,7 +2943,7 @@ $('saveAsPsd').onclick = $('exportPsdBtn').onclick = async () => {
     };
     const buf = agPsd.writePsd(psd);
     const blob = new Blob([buf], { type: 'image/vnd.adobe.photoshop' });
-    const filename = 'atelier-' + Date.now() + '.psd';
+    const filename = 'vardiko-' + Date.now() + '.psd';
     const result = await saveBlob(blob, filename);
     if (result === 'shared') msg('Shared!', 'ok');
     else if (result === 'cancelled') msg('Save cancelled');
@@ -2814,49 +2986,5 @@ document.querySelectorAll('.sheet-handle').forEach(h => {
 // Initial paint
 renderAll();
 </script>
-<!-- Simple edit area with save/undo buttons -->
-<div id="edit-area" style="margin: 30px;">
-  <div id="content">Your editable text here</div>
-  <button id="edit-btn">Edit</button>
-  <div id="edit-controls" style="display:none;">
-    <input id="edit-input" type="text" />
-    <button id="save-btn">✔</button>
-    <button id="undo-btn">✖</button>
-  </div>
-</div>
-
-<script>
-const content = document.getElementById('content');
-const editBtn = document.getElementById('edit-btn');
-const editControls = document.getElementById('edit-controls');
-const editInput = document.getElementById('edit-input');
-const saveBtn = document.getElementById('save-btn');
-const undoBtn = document.getElementById('undo-btn');
-
-let originalText = content.textContent;
-
-editBtn.onclick = function() {
-  editInput.value = content.textContent;
-  editControls.style.display = 'inline';
-  content.style.display = 'none';
-  editBtn.style.display = 'none';
-};
-
-saveBtn.onclick = function() {
-  content.textContent = editInput.value;
-  originalText = editInput.value;
-  editControls.style.display = 'none';
-  content.style.display = 'block';
-  editBtn.style.display = 'inline';
-};
-
-undoBtn.onclick = function() {
-  editInput.value = originalText;
-  editControls.style.display = 'none';
-  content.style.display = 'block';
-  editBtn.style.display = 'inline';
-};
-</script>
-
 </body>
 </html>
