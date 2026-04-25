@@ -2814,5 +2814,49 @@ document.querySelectorAll('.sheet-handle').forEach(h => {
 // Initial paint
 renderAll();
 </script>
+<!-- Simple edit area with save/undo buttons -->
+<div id="edit-area" style="margin: 30px;">
+  <div id="content">Your editable text here</div>
+  <button id="edit-btn">Edit</button>
+  <div id="edit-controls" style="display:none;">
+    <input id="edit-input" type="text" />
+    <button id="save-btn">✔</button>
+    <button id="undo-btn">✖</button>
+  </div>
+</div>
+
+<script>
+const content = document.getElementById('content');
+const editBtn = document.getElementById('edit-btn');
+const editControls = document.getElementById('edit-controls');
+const editInput = document.getElementById('edit-input');
+const saveBtn = document.getElementById('save-btn');
+const undoBtn = document.getElementById('undo-btn');
+
+let originalText = content.textContent;
+
+editBtn.onclick = function() {
+  editInput.value = content.textContent;
+  editControls.style.display = 'inline';
+  content.style.display = 'none';
+  editBtn.style.display = 'none';
+};
+
+saveBtn.onclick = function() {
+  content.textContent = editInput.value;
+  originalText = editInput.value;
+  editControls.style.display = 'none';
+  content.style.display = 'block';
+  editBtn.style.display = 'inline';
+};
+
+undoBtn.onclick = function() {
+  editInput.value = originalText;
+  editControls.style.display = 'none';
+  content.style.display = 'block';
+  editBtn.style.display = 'inline';
+};
+</script>
+
 </body>
 </html>
