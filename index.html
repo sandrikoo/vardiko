@@ -511,13 +511,9 @@
 
 <!-- Bottom dock -->
 <div class="dock">
-  <button class="dock-btn" data-sheet="tools">
-    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2v20M2 12h20M8 6l-4 6 4 6M16 6l4 6-4 6"/></svg>
-    <span>Tools</span>
-  </button>
-  <button class="dock-btn" data-sheet="brush">
-    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round"><path d="M9 11l-6 6v4h4l6-6"/><path d="M22 2L12 12"/><path d="M15 5l4 4"/></svg>
-    <span>Brush</span>
+  <button class="dock-btn" data-sheet="notes">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="9" y1="13" x2="15" y2="13"/><line x1="9" y1="17" x2="13" y2="17"/></svg>
+    <span>Notes</span>
   </button>
   <button class="dock-btn" data-sheet="adjust">
     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M2 12h2M20 12h2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M4.93 19.07l1.41-1.41M17.66 6.34l1.41-1.41"/></svg>
@@ -537,17 +533,22 @@
 <div class="sheet-backdrop" id="sheetBackdrop"></div>
 
 <!-- TOOLS SHEET -->
-<div class="sheet" id="sheet-tools">
+<!-- NOTES SHEET — pre-baked snippets, tap to copy -->
+<div class="sheet" id="sheet-notes">
   <div class="sheet-handle"></div>
   <div class="sheet-header">
-    <div class="sheet-title">Pick a <em>tool</em></div>
+    <div class="sheet-title"><em>Notes</em></div>
     <button class="sheet-close" data-close>✕</button>
   </div>
   <div class="sheet-body">
-    <div class="grid-3" id="toolsGrid">
-      <!-- populated by JS -->
+    <div style="margin-bottom:14px;color:var(--ink-faint);font-size:12px;line-height:1.5;">
+      Tap any note to copy it.
     </div>
-    <div style="margin-top:18px;font-size:11px;color:var(--ink-faint);letter-spacing:0.1em;text-transform:uppercase;margin-bottom:8px;">Add to canvas</div>
+
+    <div id="notesList" style="display:flex;flex-direction:column;gap:8px;"></div>
+
+    <!-- Useful document actions — moved here from the old Tools sheet -->
+    <div style="font-size:11px;color:var(--ink-faint);letter-spacing:0.1em;text-transform:uppercase;margin:24px 0 10px;">Document</div>
     <div class="grid-2">
       <button class="pill" id="addImageBtn">
         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="9" cy="9" r="2"/><path d="M21 15l-5-5L5 21"/></svg>
@@ -569,35 +570,17 @@
   </div>
 </div>
 
-<!-- BRUSH SHEET -->
-<div class="sheet" id="sheet-brush">
-  <div class="sheet-handle"></div>
-  <div class="sheet-header">
-    <div class="sheet-title"><em>Brush</em> settings</div>
-    <button class="sheet-close" data-close>✕</button>
-  </div>
-  <div class="sheet-body">
-    <div class="row-block">
-      <div class="row-label"><div class="name">Size</div><div class="val" id="brushSizeVal">12</div></div>
-      <input type="range" id="brushSize" min="1" max="100" value="12">
-    </div>
-    <div class="row-block">
-      <div class="row-label"><div class="name">Opacity</div><div class="val" id="brushOpacityVal">100</div></div>
-      <input type="range" id="brushOpacity" min="1" max="100" value="100">
-    </div>
-    <div class="row-block">
-      <div class="color-row">
-        <label class="color-display" style="background:#000000;" id="colorDisplay">
-          <input type="color" id="colorPicker" value="#000000">
-        </label>
-        <div class="color-info">
-          <div class="name">Color</div>
-          <div class="hex" id="colorHex">#000000</div>
-        </div>
-      </div>
-      <div class="swatches" id="swatches"></div>
-    </div>
-  </div>
+<!-- Compatibility shim: hidden elements the JS still references but the
+     user no longer interacts with. Move tool is the only tool now. -->
+<div style="display:none;">
+  <div id="toolsGrid"></div>
+  <input type="range" id="brushSize" min="1" max="100" value="12">
+  <span id="brushSizeVal">12</span>
+  <input type="range" id="brushOpacity" min="1" max="100" value="100">
+  <span id="brushOpacityVal">100</span>
+  <div id="colorDisplay"><input type="color" id="colorPicker" value="#000000"></div>
+  <span id="colorHex">#000000</span>
+  <div id="swatches"></div>
 </div>
 
 <!-- ADJUST SHEET -->
@@ -810,7 +793,7 @@ function makeCanvas(w, h) {
   return c;
 }
 function clamp(v, mn, mx) { return Math.min(Math.max(v, mn), mx); }
-function isProtectedLayerName(name) { return /\b(shadow|light|glow|highlight|lighting|bg|background)\b/i.test(name || ''); }
+function isProtectedLayerName(name) { return /\b(shadow|light|glow|highlight|lighting|bg|background|texture|textures)\b/i.test(name || ''); }
 function normalizeOpacity(v) { if (v == null) return 1; return v > 1 ? v / 255 : v; }
 function escapeHtml(s) { return String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
 
@@ -1667,24 +1650,28 @@ function loadPsdFile(file) {
       layers.list = []; layers.tree = [];
 
       // Walk PSD tree, building both the flat layers.list AND the layers.tree (groups preserved)
-      function walkPsd(psdNodes) {
+      function walkPsd(psdNodes, ancestorNames = []) {
         const treeNodes = [];
         if (!psdNodes) return treeNodes;
         for (const n of psdNodes) {
           if (n.children && n.children.length) {
             // Group
+            const gName = n.name || 'Group';
             const group = {
               kind: 'group',
-              name: n.name || 'Group',
+              name: gName,
               expanded: false,  // collapsed by default — like the screenshot the user showed
               visible: !n.hidden,
               opacity: normalizeOpacity(n.opacity),
               locked: false,
-              children: walkPsd(n.children)
+              children: walkPsd(n.children, [...ancestorNames, gName])
             };
             treeNodes.push(group);
           } else if (n.canvas || n.text) {
-            // Leaf layer
+            // Leaf layer — locked if its own name OR any ancestor group's name
+            // matches the protected-name pattern (shadow / light / bg / texture etc.)
+            const lockedByOwn = isProtectedLayerName(n.name || '');
+            const lockedByAncestor = ancestorNames.some(a => isProtectedLayerName(a));
             const layerObj = {
               name: n.name || 'Layer',
               canvas: n.canvas || makeCanvas(2, 2),
@@ -1693,7 +1680,7 @@ function loadPsdFile(file) {
               opacity: normalizeOpacity(n.opacity),
               visible: !n.hidden,
               blendMode: n.blendMode || 'normal',
-              locked: isProtectedLayerName(n.name || '')
+              locked: lockedByOwn || lockedByAncestor
             };
 
             // Detect editable text layer
@@ -3099,6 +3086,59 @@ document.querySelectorAll('.sheet-handle').forEach(h => {
     if (dy > 60) closeAllSheets();
   }, { passive: true });
 });
+
+// ─── Notes ──────────────────────────────────────────────────────────────
+// Pre-baked snippets — tap any to copy it to the clipboard.
+const NOTES = [
+  '📌 გვერდის ოფიციალური პარტნიორია 𝙗𝙚𝙡𝙞𝙫𝙚.𝙜𝙚',
+  '🚨 𝐎𝐅𝐅𝐈𝐂𝐈𝐀𝐋:',
+  '🚨 𝐁𝐑𝐄𝐀𝐊𝐈𝐍𝐆 𝐍𝐄𝐖𝐒 :',
+  '🚨 𝐓𝐑𝐀𝐍𝐒𝐅𝐄𝐑 𝐍𝐄𝐖𝐒 :'
+];
+
+async function copyText(text) {
+  try {
+    await navigator.clipboard.writeText(text);
+    msg('Copied to clipboard', 'ok');
+  } catch (err) {
+    // Fallback for browsers without async clipboard / non-HTTPS contexts
+    const ta = document.createElement('textarea');
+    ta.value = text;
+    ta.style.position = 'fixed'; ta.style.opacity = '0';
+    document.body.appendChild(ta);
+    ta.select();
+    try { document.execCommand('copy'); msg('Copied', 'ok'); }
+    catch (_) { msg('Copy failed', 'err'); }
+    document.body.removeChild(ta);
+  }
+}
+
+function renderNotes() {
+  const list = $('notesList');
+  if (!list) return;
+  list.innerHTML = '';
+  for (const text of NOTES) {
+    const row = document.createElement('div');
+    row.style.cssText = 'background:var(--panel-2); border-radius:12px; padding:14px; display:flex; align-items:center; gap:10px; cursor:pointer; transition:background 0.15s ease;';
+    row.onclick = () => copyText(text);
+    row.addEventListener('touchstart', () => { row.style.background = 'rgba(212,255,58,0.12)'; }, { passive: true });
+    row.addEventListener('touchend',   () => { row.style.background = ''; }, { passive: true });
+
+    const body = document.createElement('div');
+    body.style.cssText = 'flex:1; min-width:0; font-size:15px; line-height:1.4; white-space:pre-wrap; word-break:break-word;';
+    body.textContent = text;
+
+    const icon = document.createElement('div');
+    icon.style.cssText = 'flex-shrink:0; color:var(--ink-faint);';
+    icon.innerHTML = '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>';
+
+    row.appendChild(body);
+    row.appendChild(icon);
+    list.appendChild(row);
+  }
+}
+
+renderNotes();
 
 // Initial paint
 renderAll();
