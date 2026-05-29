@@ -2546,22 +2546,25 @@ async function replaceImageInSelectedLayer(file) {
   if (!sel || sel.locked) { msg('No editable layer to replace', 'err'); return; }
   try {
     const img = await loadImageElement(file);
-    // Remember the old layer's center point so the new image lands in the
-    // same visual spot as the frame it's replacing.
-    const oldCenterX = (sel.left || 0) + sel.canvas.width  / 2;
-    const oldCenterY = (sel.top  || 0) + sel.canvas.height / 2;
 
-    // Drop the image at its natural size — no crop, no fit, no warping.
-    // The user can resize freely with the handles afterwards.
-    const fresh = makeCanvas(img.width, img.height);
+    // Contain-fit to the full canvas: scale the image so it touches one edge
+    // (whichever runs out first), preserving aspect ratio. No cropping, no
+    // forced margins.
+    const s = Math.min(layers.docW / img.width, layers.docH / img.height);
+    const dispW = Math.max(2, Math.round(img.width  * s));
+    const dispH = Math.max(2, Math.round(img.height * s));
+
+    // Build the new bitmap at the chosen size
+    const fresh = makeCanvas(dispW, dispH);
     const fc = fresh.getContext('2d');
     fc.imageSmoothingEnabled = true; fc.imageSmoothingQuality = 'high';
-    fc.drawImage(img, 0, 0);
+    fc.drawImage(img, 0, 0, dispW, dispH);
     sel.canvas = fresh;
 
-    // Re-center on the original center point
-    sel.left = Math.round(oldCenterX - img.width  / 2);
-    sel.top  = Math.round(oldCenterY - img.height / 2);
+    // Center on the CANVAS, not on the old layer's center — old layers may
+    // have been tiny frames in odd positions, which led to off-screen drops.
+    sel.left = Math.round((layers.docW - dispW) / 2);
+    sel.top  = Math.round((layers.docH - dispH) / 2);
 
     // Discard any stale resize preview pointing at the old bitmap
     if (sel._preview) delete sel._preview;
