@@ -456,6 +456,28 @@
   }
   .modal-card label { display: block; font-size: 11px; color: var(--ink-faint); letter-spacing: 0.1em; text-transform: uppercase; margin: 12px 0 4px; }
 
+  .splash {
+    position: fixed; inset: 0; z-index: 200;
+    display: flex; align-items: center; justify-content: center;
+    background: radial-gradient(circle at 50% 45%, rgba(212,255,58,0.24), rgba(14,14,12,0.96) 42%, #0e0e0c 100%);
+    transition: opacity 0.28s ease, visibility 0.28s ease;
+  }
+  .splash.hidden {
+    opacity: 0; visibility: hidden; pointer-events: none;
+  }
+  .splash-title {
+    color: var(--accent); font-family: 'Fraunces', serif;
+    font-size: 42px; font-weight: 900; font-style: italic;
+    text-align: center; letter-spacing: 0; line-height: 0.95;
+    text-shadow: 0 0 30px rgba(212,255,58,0.35);
+  }
+  .splash-title span {
+    display: block; color: var(--ink);
+    font-family: 'Inter', system-ui, sans-serif;
+    font-size: 12px; font-style: normal; font-weight: 600;
+    letter-spacing: 0.24em; margin-bottom: 12px;
+  }
+
   .hidden-el { display: none !important; }
   input[type="file"] { display: none; }
 </style>
@@ -463,6 +485,10 @@
 <body>
 
 <input type="file" id="fileInput" accept="image/*,.psd">
+
+<div class="splash" id="splashScreen">
+  <div class="splash-title"><span>NEW UPDATE</span>2.0</div>
+</div>
 
 <!-- Top bar -->
 <div class="topbar">
@@ -732,7 +758,15 @@ window.addEventListener('load', () => {
     if (typeof agPsd !== 'undefined' && agPsd.readPsd) msg('Ready', 'ok');
     else msg('PSD support unavailable', 'err');
   }, 300);
+  setTimeout(hideSplash, 1800);
 });
+
+function hideSplash() {
+  const splash = $('splashScreen');
+  if (splash) splash.classList.add('hidden');
+}
+$('splashScreen').addEventListener('click', hideSplash);
+$('splashScreen').addEventListener('touchend', (e) => { e.preventDefault(); hideSplash(); }, { passive: false });
 
 // ─── Core state ─────────────────────────────────────────────────────────
 const canvas = $('mainCanvas');
@@ -762,6 +796,7 @@ const state = {
   maxHistory: 20,
   adjust: { brightness: 100, contrast: 100, saturation: 100, blur: 0 },
   transform: { dir: null, startPointer: null, startBounds: null, sourceCanvas: null, constrain: true },
+  gesture: { active: false, rafId: null, pending: null, startMid: null, startDistance: 1, startBounds: null, sourceCanvas: null },
   // Editing-transaction state — when the user starts moving or resizing a layer
   // we capture a snapshot here and show floating Done/Cancel buttons. Until
   // the user presses one of those, no other layer can be selected and no
@@ -1068,17 +1103,6 @@ function renderAll() {
   }
   ctx.restore();
 
-  const sel = layers.list[layers.selected];
-  if (sel && effectiveVis(layers.selected).visible) {
-    ctx.save();
-    ctx.strokeStyle = 'rgba(212,255,58,0.95)';
-    ctx.lineWidth = 2;
-    ctx.setLineDash([8, 5]);
-    // Outline follows preview bounds when live-resizing
-    const b = getLayerBounds(sel);
-    ctx.strokeRect(b.left + 1, b.top + 1, Math.max(1, b.right - b.left - 2), Math.max(1, b.bottom - b.top - 2));
-    ctx.restore();
-  }
   updateHandles();
 }
 
@@ -1481,6 +1505,21 @@ function clearPointerMetrics() {
   state.pointerMetrics = null;
 }
 
+function getTouchPoint(t) {
+  if (!state.pointerMetrics) cachePointerMetrics();
+  const m = state.pointerMetrics;
+  return { x: (t.clientX - m.left) * m.sx, y: (t.clientY - m.top) * m.sy };
+}
+
+function getGestureInfo(e) {
+  const a = getTouchPoint(e.touches[0]);
+  const b = getTouchPoint(e.touches[1]);
+  return {
+    mid: { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 },
+    distance: Math.max(1, Math.hypot(b.x - a.x, b.y - a.y)),
+  };
+}
+
 // canvas-coord conversion — works for both touch and mouse
 function getEvtPoint(e) {
   if (!state.pointerMetrics) cachePointerMetrics();
@@ -1868,9 +1907,98 @@ canvas.addEventListener('touchmove', onCanvasMove, { passive: false });
 canvas.addEventListener('touchend', onCanvasEnd);
 canvas.addEventListener('touchcancel', onCanvasEnd);
 
+function startTouchGesture(e) {
+  if (!state.hasContent || !e.touches || e.touches.length < 2) return false;
+  e.preventDefault();
+  cachePointerMetrics();
+  const info = getGestureInfo(e);
+  let layerIndex = layers.selected;
+  let L = layers.list[layerIndex];
+  if (!L || !effectiveVis(layerIndex).visible || L.locked || !canEdit(L)) {
+    layerIndex = getTopLayerByBounds(info.mid.x, info.mid.y);
+    if (layerIndex >= 0) layerIndex = selectLayer(layerIndex, { quiet: true });
+    L = layers.list[layerIndex];
+  }
+  if (layerIndex < 0 || !L || !effectiveVis(layerIndex).visible || !canEdit(L)) {
+    clearPointerMetrics();
+    return false;
+  }
+  if (L._preview) finalizeResize(L);
+  beginEdit(layerIndex);
+  if (state.move.rafId) {
+    cancelAnimationFrame(state.move.rafId);
+    applyMoveFrame();
+  }
+  state.move.pendingPoint = null;
+  state.isDrawing = false;
+  state.dragLayerIndex = -1;
+  state.gesture.active = true;
+  state.gesture.pending = info;
+  state.gesture.startMid = info.mid;
+  state.gesture.startDistance = info.distance;
+  state.gesture.startBounds = { left: L.left || 0, top: L.top || 0, width: L.canvas.width, height: L.canvas.height };
+  state.gesture.sourceCanvas = makeCanvas(L.canvas.width, L.canvas.height);
+  state.gesture.sourceCanvas.getContext('2d').drawImage(L.canvas, 0, 0);
+  state.didChange = false;
+  msg('Pinch / pan: ' + L.name);
+  return true;
+}
+
+function updateTouchGesture(e) {
+  if (!state.gesture.active || !e.touches || e.touches.length < 2) return false;
+  e.preventDefault();
+  state.gesture.pending = getGestureInfo(e);
+  if (!state.gesture.rafId) state.gesture.rafId = requestAnimationFrame(applyGestureFrame);
+  return true;
+}
+
+function applyGestureFrame() {
+  state.gesture.rafId = null;
+  if (!state.gesture.active || !state.gesture.pending) return;
+  const L = layers.list[layers.selected];
+  if (!L) return;
+  const pending = state.gesture.pending;
+  const sb = state.gesture.startBounds;
+  const scale = clamp(pending.distance / state.gesture.startDistance, 0.05, 20);
+  const width = Math.max(2, Math.round(sb.width * scale));
+  const height = Math.max(2, Math.round(sb.height * scale));
+  const startCenter = { x: sb.left + sb.width / 2, y: sb.top + sb.height / 2 };
+  const center = {
+    x: startCenter.x + pending.mid.x - state.gesture.startMid.x,
+    y: startCenter.y + pending.mid.y - state.gesture.startMid.y,
+  };
+  L._preview = {
+    source: state.gesture.sourceCanvas,
+    left: Math.round(center.x - width / 2),
+    top: Math.round(center.y - height / 2),
+    width,
+    height,
+  };
+  state.didChange = true;
+  renderAll();
+}
+
+function endTouchGesture() {
+  if (!state.gesture.active) return false;
+  if (state.gesture.rafId) {
+    cancelAnimationFrame(state.gesture.rafId);
+    applyGestureFrame();
+  }
+  state.gesture.active = false;
+  state.gesture.pending = null;
+  state.gesture.startMid = null;
+  state.gesture.startBounds = null;
+  state.gesture.sourceCanvas = null;
+  clearPointerMetrics();
+  return true;
+}
+
 function onCanvasStart(e) {
   if (!state.hasContent) return;
-  if (e.touches && e.touches.length > 1) return;
+  if (e.touches && e.touches.length > 1) {
+    startTouchGesture(e);
+    return;
+  }
   e.preventDefault();
   cachePointerMetrics();
   const p = getEvtPoint(e);
@@ -1962,6 +2090,10 @@ function onCanvasStart(e) {
 }
 
 function onCanvasMove(e) {
+  if (state.gesture.active) {
+    updateTouchGesture(e);
+    return;
+  }
   if (!state.isDrawing) return;
   if (e.touches && e.touches.length > 1) return;
   e.preventDefault();
@@ -2013,6 +2145,10 @@ function applyMoveFrame() {
 }
 
 function onCanvasEnd() {
+  if (state.gesture.active) {
+    endTouchGesture();
+    return;
+  }
   if (!state.isDrawing) return;
   const endingMove = state.tool === 'move';
   if (state.move.rafId) {
