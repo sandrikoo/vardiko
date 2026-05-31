@@ -43,6 +43,13 @@
     font-size: 20px; letter-spacing: -0.02em;
   }
   .brand span { color: var(--accent); font-style: normal; }
+  #brandHome {
+    background: none; border: 0; margin: 0; padding: 0;
+    font: inherit; color: inherit; cursor: pointer;
+    display: flex; align-items: center; gap: 10px;
+  }
+  #brandHome:active { opacity: 0.7; }
+  #brandHome:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; border-radius: 8px; }
   .app-version {
     color: var(--ink-faint); font-size: 10px; font-weight: 600;
     letter-spacing: 0.08em; text-transform: uppercase;

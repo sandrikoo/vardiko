@@ -1,5 +1,5 @@
 const $ = (id) => document.getElementById(id);
-const APP_VERSION = '2.0.5';
+const APP_VERSION = '2.0.6';
 console.log('[Vardiko] version', APP_VERSION);
 
 // ─── Status / messaging ─────────────────────────────────────────────────
@@ -1014,6 +1014,43 @@ function initDocument(w, h) {
   state.history = []; state.historyIndex = -1;
   resetAdjustments();
 }
+
+// Inverse of initDocument — tear the current document down and return to the
+// empty/home screen. Invoked by the brand/logo button (goHome).
+function closeDocument() {
+  // Abandon any in-progress text edit or move/resize transaction (same cleanup
+  // restoreHistory does) so nothing writes back to a torn-down layer.
+  if (editingTextLayer) {
+    editingTextLayer = null; textEditBackup = null;
+    const teSheet = $('sheet-textedit');
+    if (teSheet && teSheet.classList.contains('open')) closeAllSheets();
+  }
+  if (state.edit.active) {
+    state.edit.active = false; state.edit.layerIndex = -1; state.edit.snapshot = null;
+    editActionsEl.classList.remove('visible');
+  }
+  layers.list = []; layers.tree = []; layers.selected = -1;
+  layers.docW = 0; layers.docH = 0;
+  state.hasContent = false; state.isDrawing = false;
+  state.history = []; state.historyIndex = -1;
+  state.dragLayerIndex = -1; state.move.pendingPoint = null;
+  handlesOverlay.classList.add('hidden-el');
+  stageInner.classList.add('hidden-el');
+  emptyState.classList.remove('hidden-el');
+  closeAllSheets();
+  resetAdjustments();
+  ctx.setTransform(1, 0, 0, 1, 0, 0);
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+  msg('Ready', 'ok');
+}
+
+// Brand/logo → home. With no persistence yet, returning home discards the
+// current image, so confirm first when a document is open.
+function goHome() {
+  if (state.hasContent && !confirm('Return to the home screen? Your current image will be cleared.')) return;
+  closeDocument();
+}
+$('brandHome').addEventListener('click', goHome);
 
 // ─── Drawing on canvas ──────────────────────────────────────────────────
 // The move tool is the only tool — brush/eraser/shape/text/pick were removed.

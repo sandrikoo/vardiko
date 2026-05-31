@@ -6,11 +6,11 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="theme-color" content="#0e0e0c">
-<meta name="vardiko-version" content="2.0.5">
+<meta name="vardiko-version" content="2.0.6">
 <title>Vardiko Mobile</title>
 <link href="https://fonts.googleapis.com/css2?family=Fraunces:ital,wght@0,400;0,900;1,400&family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
 <script src="https://cdn.jsdelivr.net/npm/ag-psd@14.3.2/dist/bundle.js"></script>
-<link rel="stylesheet" href="styles.css?v=2.0.5">
+<link rel="stylesheet" href="styles.css?v=2.0.6">
 </head>
 <body>
 
@@ -18,8 +18,10 @@
 
 <!-- Top bar -->
 <div class="topbar">
-  <div class="brand">Vardiko<span>.</span></div>
-  <div class="app-version" id="appVersion">v2.0.5</div>
+  <button id="brandHome" type="button" aria-label="Vardiko — return to home screen">
+    <div class="brand">Vardiko<span>.</span></div>
+    <div class="app-version" id="appVersion">v2.0.6</div>
+  </button>
   <div class="top-spacer"></div>
   <div class="top-msg" id="topMsg">ready</div>
   <button class="top-btn" id="undoBtn" title="Undo">
@@ -256,7 +258,7 @@
   </div>
 </div>
 
-<script src="core.js?v=2.0.5"></script>
-<script src="app.js?v=2.0.5"></script>
+<script src="core.js?v=2.0.6"></script>
+<script src="app.js?v=2.0.6"></script>
 </body>
 </html>
