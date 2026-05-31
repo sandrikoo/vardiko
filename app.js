@@ -1,5 +1,5 @@
 const $ = (id) => document.getElementById(id);
-const APP_VERSION = '2.0.4';
+const APP_VERSION = '2.0.5';
 console.log('[Vardiko] version', APP_VERSION);
 
 // ─── Status / messaging ─────────────────────────────────────────────────
@@ -28,13 +28,7 @@ const emptyState = $('emptyState');
 const handlesOverlay = $('handlesOverlay');
 
 const state = {
-  tool: 'move',
-  brushSize: 12,
-  brushOpacity: 1,
-  color: '#000000',
   isDrawing: false,
-  lastX: 0, lastY: 0, startX: 0, startY: 0,
-  snapshot: null,
   dragLayerIndex: -1,
   dragOffsetX: 0,
   dragOffsetY: 0,
@@ -81,10 +75,7 @@ function makeCanvas(w, h) {
   c.width = w; c.height = h;
   return c;
 }
-function clamp(v, mn, mx) { return Math.min(Math.max(v, mn), mx); }
-function isProtectedLayerName(name) { return /\b(shadow|light|glow|highlight|lighting|bg|background|texture|textures)\b/i.test(name || ''); }
-function normalizeOpacity(v) { if (v == null) return 1; return v > 1 ? v / 255 : v; }
-function escapeHtml(s) { return String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
+// clamp, isProtectedLayerName, normalizeOpacity, escapeHtml → core.js
 
 // ─── Group tree helpers ─────────────────────────────────────────────────
 // Tree node shape:
@@ -95,15 +86,8 @@ function escapeHtml(s) { return String(s).replace(/[&<>"']/g, c => ({'&':'&amp;'
 // hit-testing, and history code keep working unchanged. The tree is purely
 // for the layers panel UI and "is this group visible?" computations.
 
-// Walk the tree depth-first, calling fn(layerIndex, ancestors) for each leaf.
-// ancestors is an array of group nodes from root to immediate parent.
-function walkTreeLeaves(nodes, fn, ancestors = []) {
-  if (!nodes) return;
-  for (const n of nodes) {
-    if (n.kind === 'group') walkTreeLeaves(n.children, fn, [...ancestors, n]);
-    else if (n.kind === 'layer') fn(n.layerIndex, ancestors);
-  }
-}
+// findLeafContext, collectDisplayedLeaves, findPathToLayer → core.js
+// (walkTreeLeaves was unused and removed.)
 
 // Compute effective visibility / opacity for a leaf, factoring in ancestor groups.
 function effectiveVis(layerIndex) {
@@ -123,39 +107,6 @@ function effectiveVis(layerIndex) {
   return { visible, opacity };
 }
 
-// Find a leaf node by layerIndex; returns { parentArray, indexInParent } or null
-function findLeafContext(nodes, layerIndex) {
-  for (let i = 0; i < nodes.length; i++) {
-    const n = nodes[i];
-    if (n.kind === 'layer' && n.layerIndex === layerIndex) {
-      return { parentArray: nodes, indexInParent: i };
-    }
-    if (n.kind === 'group') {
-      const sub = findLeafContext(n.children, layerIndex);
-      if (sub) return sub;
-    }
-  }
-  return null;
-}
-
-// Collect leaves in the same order they're rendered in the panel (top-of-stack first).
-// Each entry has { layerIndex, parentArray }.
-function collectDisplayedLeaves(nodes) {
-  const out = [];
-  function walk(arr) {
-    for (let i = arr.length - 1; i >= 0; i--) {
-      const n = arr[i];
-      if (n.kind === 'group') {
-        if (n.expanded) walk(n.children);
-      } else if (n.kind === 'layer') {
-        out.push({ layerIndex: n.layerIndex, parentArray: arr });
-      }
-    }
-  }
-  walk(nodes);
-  return out;
-}
-
 // Move a layer up (+1) or down (-1) within its current group in the tree.
 // Direction is in "stacking" terms: +1 = higher stack (above in display).
 function moveLayerInTree(layerIndex, direction) {
@@ -170,19 +121,6 @@ function moveLayerInTree(layerIndex, direction) {
   // Skip over a group sibling (don't dive into it from up/down buttons)
   [parentArray[indexInParent], parentArray[newIdx]] = [parentArray[newIdx], parentArray[indexInParent]];
   renderAll(); updateLayersUI(); pushHistory();
-}
-
-// Find ancestor chain to a leaf with given layerIndex. Returns list of nodes
-// (groups + the layer node) from root to leaf, or null.
-function findPathToLayer(nodes, layerIndex) {
-  for (const n of nodes) {
-    if (n.kind === 'layer' && n.layerIndex === layerIndex) return [n];
-    if (n.kind === 'group') {
-      const sub = findPathToLayer(n.children, layerIndex);
-      if (sub) return [n, ...sub];
-    }
-  }
-  return null;
 }
 
 // Rebuild a flat tree (no groups) from layers.list — used when there's no PSD-derived tree.
@@ -669,11 +607,6 @@ function updateHandles() {
   }
   const sel = layers.list[layers.selected];
   if (!sel || !sel.visible || sel.locked) { handlesOverlay.classList.add('hidden-el'); return; }
-  // Don't show during active drawing strokes, would be in the way
-  if (state.isDrawing && ['brush','eraser','rect','circle','line'].includes(state.tool)) {
-    handlesOverlay.classList.add('hidden-el');
-    return;
-  }
   handlesOverlay.classList.remove('hidden-el');
 
   const rect = canvas.getBoundingClientRect();
@@ -730,34 +663,7 @@ function resampleCanvas(source, w, h) {
   return out;
 }
 
-function computeResizeBounds(dir, sb, sp, p, lock) {
-  let { left, top, width, height } = sb;
-  let nL = left, nT = top, nR = left + width, nB = top + height;
-  const dx = p.x - sp.x, dy = p.y - sp.y;
-  if (dir.includes('w')) nL += dx;
-  if (dir.includes('e')) nR += dx;
-  if (dir.includes('n')) nT += dy;
-  if (dir.includes('s')) nB += dy;
-  const MIN = 4;
-  if (nR - nL < MIN) { if (dir.includes('w')) nL = nR - MIN; else nR = nL + MIN; }
-  if (nB - nT < MIN) { if (dir.includes('n')) nT = nB - MIN; else nB = nT + MIN; }
-  let nw = nR - nL, nh = nB - nT;
-  if (lock) {
-    const ratio = sb.width / sb.height;
-    if (['nw','ne','se','sw'].includes(dir)) {
-      const rw = nw / sb.width, rh = nh / sb.height;
-      const r = Math.abs(rw) > Math.abs(rh) ? rw : rh;
-      nw = sb.width * r; nh = sb.height * r;
-      if (dir.includes('w')) nL = nR - nw; else nR = nL + nw;
-      if (dir.includes('n')) nT = nB - nh; else nB = nT + nh;
-    } else if (dir === 'n' || dir === 's') {
-      nw = nh * ratio; nL = left + (width - nw) / 2; nR = nL + nw;
-    } else {
-      nh = nw / ratio; nT = top + (height - nh) / 2; nB = nT + nh;
-    }
-  }
-  return { left: nL, top: nT, width: Math.max(MIN, nR - nL), height: Math.max(MIN, nB - nT) };
-}
+// computeResizeBounds → core.js
 
 function cachePointerMetrics() {
   const r = canvas.getBoundingClientRect();
@@ -1103,60 +1009,15 @@ function loadPsdFile(file) {
 function initDocument(w, h) {
   canvas.width = w; canvas.height = h;
   layers.docW = w; layers.docH = h; layers.selected = -1;
-  state.hasContent = true; state.isDrawing = false; state.snapshot = null;
+  state.hasContent = true; state.isDrawing = false;
   emptyState.classList.add('hidden-el'); stageInner.classList.remove('hidden-el');
   state.history = []; state.historyIndex = -1;
   resetAdjustments();
 }
 
-// ─── Tools ──────────────────────────────────────────────────────────────
-const TOOLS = [
-  { id: 'move',   label: 'Move',    icon: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round"><path d="M5 9l-3 3 3 3"/><path d="M9 5l3-3 3 3"/><path d="M15 19l-3 3-3-3"/><path d="M19 9l3 3-3 3"/><path d="M2 12h20"/><path d="M12 2v20"/></svg>' },
-  { id: 'brush',  label: 'Brush',   icon: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round"><path d="M9 11l-6 6v4h4l6-6"/><path d="M22 2L12 12"/><path d="M15 5l4 4"/></svg>' },
-  { id: 'eraser', label: 'Eraser',  icon: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round"><path d="M20 20H7l-4-4a2 2 0 010-2.83l10-10a2 2 0 012.83 0l6 6a2 2 0 010 2.83L13 20"/></svg>' },
-  { id: 'pick',   label: 'Color',   icon: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round"><path d="M2 22l1-5 13-13 4 4L7 21l-5 1z"/></svg>' },
-  { id: 'rect',   label: 'Rect',    icon: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="1"/></svg>' },
-  { id: 'circle', label: 'Circle',  icon: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/></svg>' },
-  { id: 'line',   label: 'Line',    icon: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round"><path d="M4 20L20 4"/></svg>' },
-  { id: 'text',   label: 'Text',    icon: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round"><path d="M4 7V4h16v3"/><path d="M9 20h6"/><path d="M12 4v16"/></svg>' }
-];
-const toolsGrid = $('toolsGrid');
-TOOLS.forEach(t => {
-  const b = document.createElement('button');
-  b.className = 'big-tool' + (state.tool === t.id ? ' active' : '');
-  b.dataset.tool = t.id;
-  b.innerHTML = t.icon + '<span>' + t.label + '</span>';
-  b.onclick = () => {
-    state.tool = t.id;
-    document.querySelectorAll('.big-tool').forEach(x => x.classList.toggle('active', x.dataset.tool === t.id));
-    msg('Tool: ' + t.label, 'ok');
-    closeAllSheets();
-    renderAll();
-  };
-  toolsGrid.appendChild(b);
-});
-
-// ─── Brush ──────────────────────────────────────────────────────────────
-$('brushSize').oninput = (e) => { state.brushSize = +e.target.value; $('brushSizeVal').textContent = e.target.value; };
-$('brushOpacity').oninput = (e) => { state.brushOpacity = +e.target.value/100; $('brushOpacityVal').textContent = e.target.value; };
-$('colorPicker').oninput = (e) => setColor(e.target.value);
-function setColor(hex) {
-  state.color = hex;
-  $('colorPicker').value = hex;
-  $('colorHex').textContent = hex.toUpperCase();
-  $('colorDisplay').style.background = hex;
-  document.querySelectorAll('.swatch').forEach(s => s.classList.toggle('active', s.dataset.color === hex));
-}
-const PRESETS = ['#000000','#ffffff','#d4ff3a','#ff6b3a','#ff4444','#4488ff','#22cc88','#aa55ff','#666666','#cccccc','#ffcc00','#ff0088','#8b4513','#2c5f2d','#97bc62','#fce300'];
-const swatchesEl = $('swatches');
-PRESETS.forEach(c => {
-  const d = document.createElement('div');
-  d.className = 'swatch'; d.style.background = c; d.dataset.color = c;
-  d.onclick = () => setColor(c);
-  swatchesEl.appendChild(d);
-});
-
 // ─── Drawing on canvas ──────────────────────────────────────────────────
+// The move tool is the only tool — brush/eraser/shape/text/pick were removed.
+// activeLayerCtx() is kept because the Adjust-sheet filters still use it.
 function activeLayerCtx() {
   if (layers.selected < 0) { msg('Select a layer first', 'err'); return null; }
   const L = layers.list[layers.selected];
@@ -1164,7 +1025,6 @@ function activeLayerCtx() {
   if (!canEdit(L)) { msg('Layer is locked', 'err'); return null; }
   return { layer: L, ctx: L.canvas.getContext('2d') };
 }
-function toLayerPoint(L, x, y) { return { x: x - (L.left||0), y: y - (L.top||0) }; }
 
 canvas.addEventListener('mousedown', onCanvasStart);
 canvas.addEventListener('mousemove', onCanvasMove);
@@ -1275,92 +1135,58 @@ function onCanvasStart(e) {
   e.preventDefault();
   cachePointerMetrics();
   const p = getEvtPoint(e);
-  state.startX = p.x; state.startY = p.y; state.lastX = p.x; state.lastY = p.y;
   state.didChange = false;
-  // Track for tap-vs-drag distinction (used by drawing tools to allow tap-to-select)
-  state.tapStartTime = Date.now();
-  state.tapMoved = false;
 
-  if (state.tool === 'pick') {
-    const d = ctx.getImageData(Math.floor(p.x), Math.floor(p.y), 1, 1).data;
-    setColor('#' + [d[0],d[1],d[2]].map(v => v.toString(16).padStart(2,'0')).join(''));
-    clearPointerMetrics();
-    return;
-  }
-  if (state.tool === 'move') {
-    // If a layer is already selected and the touch lands inside ITS bounding box,
-    // keep dragging that layer — no re-selection, no UI rebuild.
-    let stickyHit = -1;
-    if (layers.selected >= 0) {
-      const sel = layers.list[layers.selected];
-      const eff = effectiveVis(layers.selected);
-      if (sel && eff.visible && !sel.locked) {
-        const b = getLayerBounds(sel);
-        if (p.x >= b.left && p.x <= b.right && p.y >= b.top && p.y <= b.bottom) {
-          stickyHit = layers.selected;
-        }
+  // If a layer is already selected and the touch lands inside ITS bounding box,
+  // keep dragging that layer — no re-selection, no UI rebuild.
+  let stickyHit = -1;
+  if (layers.selected >= 0) {
+    const sel = layers.list[layers.selected];
+    const eff = effectiveVis(layers.selected);
+    if (sel && eff.visible && !sel.locked) {
+      const b = getLayerBounds(sel);
+      if (p.x >= b.left && p.x <= b.right && p.y >= b.top && p.y <= b.bottom) {
+        stickyHit = layers.selected;
       }
     }
+  }
 
-    if (stickyHit >= 0) {
-      // Just start the drag — keep current selection
-      const L = layers.list[stickyHit];
-      // If a previous resize left a live preview attached, bake it now so
-      // L.left/L.canvas.width reflect what the user sees on screen.
-      if (L._preview) finalizeResize(L);
-      state.isDrawing = true;
-      state.dragLayerIndex = stickyHit;
-      state.dragOffsetX = p.x - (L.left||0);
-      state.dragOffsetY = p.y - (L.top||0);
-      state.move.pendingPoint = p;
-      beginEdit(stickyHit);
-      msg('Moving: ' + L.name);
-      return;
-    }
-
-    // No sticky match — bounds-based hit-test (predictable for text layers).
-    const hit = getTopLayerByBounds(p.x, p.y);
-    if (hit >= 0) {
-      const r = selectLayer(hit, { quiet: true });
-      const L = layers.list[r];
-      if (r < 0 || !L || !canEdit(L)) return;
-      if (L._preview) finalizeResize(L);
-      state.isDrawing = true;
-      state.dragLayerIndex = r;
-      state.dragOffsetX = p.x - (L.left||0);
-      state.dragOffsetY = p.y - (L.top||0);
-      state.move.pendingPoint = p;
-      beginEdit(r);
-      msg('Selected: ' + L.name, 'ok');
-    } else if (!state.edit.active) {
-      // Don't deselect while an edit transaction is open — user must press
-      // Done or Cancel to leave editing mode
-      selectLayer(-1, { quiet: true });
-    }
-    clearPointerMetrics();
+  if (stickyHit >= 0) {
+    // Just start the drag — keep current selection
+    const L = layers.list[stickyHit];
+    // If a previous resize left a live preview attached, bake it now so
+    // L.left/L.canvas.width reflect what the user sees on screen.
+    if (L._preview) finalizeResize(L);
+    state.isDrawing = true;
+    state.dragLayerIndex = stickyHit;
+    state.dragOffsetX = p.x - (L.left||0);
+    state.dragOffsetY = p.y - (L.top||0);
+    state.move.pendingPoint = p;
+    beginEdit(stickyHit);
+    msg('Moving: ' + L.name);
     return;
   }
-  if (state.tool === 'text') {
-    const t = prompt('Enter text:', 'Hello');
-    if (!t) { clearPointerMetrics(); return; }
-    const a = activeLayerCtx(); if (!a) { clearPointerMetrics(); return; }
-    const lp = toLayerPoint(a.layer, p.x, p.y);
-    a.ctx.save();
-    a.ctx.fillStyle = state.color;
-    a.ctx.globalAlpha = state.brushOpacity;
-    a.ctx.font = Math.max(state.brushSize*2, 24) + 'px Fraunces, serif';
-    a.ctx.fillText(t, lp.x, lp.y);
-    a.ctx.restore();
-    touchLayerPixels(a.layer);
-    state.didChange = true;
-    renderAll(); pushHistory(); clearPointerMetrics(); return;
+
+  // No sticky match — bounds-based hit-test (predictable for text layers).
+  const hit = getTopLayerByBounds(p.x, p.y);
+  if (hit >= 0) {
+    const r = selectLayer(hit, { quiet: true });
+    const L = layers.list[r];
+    if (r < 0 || !L || !canEdit(L)) return;
+    if (L._preview) finalizeResize(L);
+    state.isDrawing = true;
+    state.dragLayerIndex = r;
+    state.dragOffsetX = p.x - (L.left||0);
+    state.dragOffsetY = p.y - (L.top||0);
+    state.move.pendingPoint = p;
+    beginEdit(r);
+    msg('Selected: ' + L.name, 'ok');
+  } else if (!state.edit.active) {
+    // Don't deselect while an edit transaction is open — user must press
+    // Done or Cancel to leave editing mode
+    selectLayer(-1, { quiet: true });
   }
-  if (['rect','circle','line'].includes(state.tool)) {
-    const a = activeLayerCtx(); if (!a) { clearPointerMetrics(); return; }
-    state.snapshot = a.ctx.getImageData(0, 0, a.layer.canvas.width, a.layer.canvas.height);
-  }
-  state.isDrawing = true;
-  if (state.tool === 'brush' || state.tool === 'eraser') drawStroke(p.x, p.y, p.x, p.y);
+  clearPointerMetrics();
 }
 
 function onCanvasMove(e) {
@@ -1373,40 +1199,10 @@ function onCanvasMove(e) {
     return;
   }
   if (!state.isDrawing) return;
-  if (e.touches && e.touches.length > 1) return;
   e.preventDefault();
   const p = getEvtPoint(e);
-  // Mark as a drag (not a tap) once movement exceeds threshold
-  const dx = p.x - state.startX, dy = p.y - state.startY;
-  if (Math.hypot(dx, dy) > 8) state.tapMoved = true;
-
-  if (state.tool === 'move') {
-    state.move.pendingPoint = p;
-    if (!state.move.rafId) state.move.rafId = requestAnimationFrame(applyMoveFrame);
-  } else if (state.tool === 'brush' || state.tool === 'eraser') {
-    drawStroke(state.lastX, state.lastY, p.x, p.y);
-  } else if (['rect','circle','line'].includes(state.tool)) {
-    const a = activeLayerCtx(); if (!a) return;
-    const s = toLayerPoint(a.layer, state.startX, state.startY);
-    const t = toLayerPoint(a.layer, p.x, p.y);
-    a.ctx.putImageData(state.snapshot, 0, 0);
-    a.ctx.save();
-    a.ctx.globalAlpha = state.brushOpacity;
-    a.ctx.strokeStyle = state.color;
-    a.ctx.lineWidth = state.brushSize;
-    a.ctx.lineCap = 'round';
-    if (state.tool === 'rect') a.ctx.strokeRect(s.x, s.y, t.x-s.x, t.y-s.y);
-    else if (state.tool === 'circle') {
-      a.ctx.beginPath();
-      const rx = Math.abs(t.x-s.x)/2, ry = Math.abs(t.y-s.y)/2;
-      const cx = s.x + (t.x-s.x)/2, cy = s.y + (t.y-s.y)/2;
-      a.ctx.ellipse(cx, cy, rx, ry, 0, 0, Math.PI*2); a.ctx.stroke();
-    } else { a.ctx.beginPath(); a.ctx.moveTo(s.x, s.y); a.ctx.lineTo(t.x, t.y); a.ctx.stroke(); }
-    a.ctx.restore();
-    touchLayerPixels(a.layer);
-    state.didChange = true; renderAll();
-  }
-  state.lastX = p.x; state.lastY = p.y;
+  state.move.pendingPoint = p;
+  if (!state.move.rafId) state.move.rafId = requestAnimationFrame(applyMoveFrame);
 }
 
 function applyMoveFrame() {
@@ -1429,18 +1225,15 @@ function onCanvasEnd() {
     return;
   }
   if (!state.isDrawing) return;
-  const endingMove = state.tool === 'move';
   if (state.move.rafId) {
     cancelAnimationFrame(state.move.rafId);
     applyMoveFrame();
   }
   flushRender();
-  state.isDrawing = false; state.snapshot = null; state.dragLayerIndex = -1;
+  state.isDrawing = false; state.dragLayerIndex = -1;
   state.move.pendingPoint = null;
-  if (!endingMove) renderAll();
   // While an edit transaction is open, the user must press Done/Cancel to
-  // commit. Drawing-tool strokes (brush, eraser, etc.) still push history
-  // immediately because they're not part of a move/resize transaction.
+  // commit; a finished move pushes history only when nothing is mid-edit.
   if (state.didChange && !state.edit.active) pushHistory();
   state.didChange = false;
   clearPointerMetrics();
@@ -1452,40 +1245,21 @@ function onCanvasEnd() {
 let lastTapInfo = { time: 0, layerIndex: -1 };
 canvas.addEventListener('click', (e) => {
   if (!state.hasContent) return;
-  if (state.tool !== 'move' && state.tapMoved) return;
 
   const p = getEvtPoint(e);
   const hit = getTopLayerAtPoint(p.x, p.y);
   if (hit < 0) return;
 
-  // Detect double-tap on the same layer
+  // Detect double-tap on the same layer → open the editor for text layers.
   const now = Date.now();
   const isDouble = (now - lastTapInfo.time < 350) && lastTapInfo.layerIndex === hit;
   lastTapInfo = { time: now, layerIndex: hit };
 
-  // For drawing tools, perform the selection (move tool handles it in mousedown)
-  if (state.tool !== 'move') {
-    selectLayer(hit, { quiet: true });
-  }
-
-  // Double-tap a text layer → open the editor
   if (isDouble) {
     const L = layers.list[hit];
     if (L && L.text && !L.locked) openTextEditor();
   }
 });
-function drawStroke(x1, y1, x2, y2) {
-  const a = activeLayerCtx(); if (!a) return;
-  const p1 = toLayerPoint(a.layer, x1, y1), p2 = toLayerPoint(a.layer, x2, y2);
-  a.ctx.save();
-  if (state.tool === 'eraser') { a.ctx.globalCompositeOperation = 'destination-out'; a.ctx.strokeStyle = 'rgba(0,0,0,1)'; }
-  else { a.ctx.globalCompositeOperation = 'source-over'; a.ctx.globalAlpha = state.brushOpacity; a.ctx.strokeStyle = state.color; }
-  a.ctx.lineWidth = state.brushSize; a.ctx.lineCap = 'round'; a.ctx.lineJoin = 'round';
-  a.ctx.beginPath(); a.ctx.moveTo(p1.x, p1.y); a.ctx.lineTo(p2.x, p2.y); a.ctx.stroke();
-  a.ctx.restore();
-  touchLayerPixels(a.layer);
-  state.didChange = true; renderAll();
-}
 
 // ─── Adjust ─────────────────────────────────────────────────────────────
 ['brightness','contrast','saturation','blur'].forEach(id => {
