@@ -456,28 +456,6 @@
   }
   .modal-card label { display: block; font-size: 11px; color: var(--ink-faint); letter-spacing: 0.1em; text-transform: uppercase; margin: 12px 0 4px; }
 
-  .splash {
-    position: fixed; inset: 0; z-index: 200;
-    display: flex; align-items: center; justify-content: center;
-    background: radial-gradient(circle at 50% 45%, rgba(212,255,58,0.24), rgba(14,14,12,0.96) 42%, #0e0e0c 100%);
-    transition: opacity 0.28s ease, visibility 0.28s ease;
-  }
-  .splash.hidden {
-    opacity: 0; visibility: hidden; pointer-events: none;
-  }
-  .splash-title {
-    color: var(--accent); font-family: 'Fraunces', serif;
-    font-size: 42px; font-weight: 900; font-style: italic;
-    text-align: center; letter-spacing: 0; line-height: 0.95;
-    text-shadow: 0 0 30px rgba(212,255,58,0.35);
-  }
-  .splash-title span {
-    display: block; color: var(--ink);
-    font-family: 'Inter', system-ui, sans-serif;
-    font-size: 12px; font-style: normal; font-weight: 600;
-    letter-spacing: 0.24em; margin-bottom: 12px;
-  }
-
   .hidden-el { display: none !important; }
   input[type="file"] { display: none; }
 </style>
@@ -485,10 +463,6 @@
 <body>
 
 <input type="file" id="fileInput" accept="image/*,.psd">
-
-<div class="splash" id="splashScreen">
-  <div class="splash-title"><span>NEW UPDATE</span>2.0</div>
-</div>
 
 <!-- Top bar -->
 <div class="topbar">
@@ -758,15 +732,7 @@ window.addEventListener('load', () => {
     if (typeof agPsd !== 'undefined' && agPsd.readPsd) msg('Ready', 'ok');
     else msg('PSD support unavailable', 'err');
   }, 300);
-  setTimeout(hideSplash, 1800);
 });
-
-function hideSplash() {
-  const splash = $('splashScreen');
-  if (splash) splash.classList.add('hidden');
-}
-$('splashScreen').addEventListener('click', hideSplash);
-$('splashScreen').addEventListener('touchend', (e) => { e.preventDefault(); hideSplash(); }, { passive: false });
 
 // ─── Core state ─────────────────────────────────────────────────────────
 const canvas = $('mainCanvas');
