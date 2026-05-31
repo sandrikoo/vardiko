@@ -753,6 +753,8 @@ const state = {
   dragLayerIndex: -1,
   dragOffsetX: 0,
   dragOffsetY: 0,
+  move: { rafId: null, pendingPoint: null },
+  pointerMetrics: null,
   didChange: false,
   hasContent: false,
   history: [],
@@ -1465,12 +1467,26 @@ function computeResizeBounds(dir, sb, sp, p, lock) {
   return { left: nL, top: nT, width: Math.max(MIN, nR - nL), height: Math.max(MIN, nB - nT) };
 }
 
+function cachePointerMetrics() {
+  const r = canvas.getBoundingClientRect();
+  state.pointerMetrics = {
+    left: r.left,
+    top: r.top,
+    sx: canvas.width / r.width,
+    sy: canvas.height / r.height,
+  };
+}
+
+function clearPointerMetrics() {
+  state.pointerMetrics = null;
+}
+
 // canvas-coord conversion — works for both touch and mouse
 function getEvtPoint(e) {
-  const r = canvas.getBoundingClientRect();
-  const sx = canvas.width / r.width, sy = canvas.height / r.height;
+  if (!state.pointerMetrics) cachePointerMetrics();
+  const m = state.pointerMetrics;
   const t = (e.touches && e.touches[0]) || (e.changedTouches && e.changedTouches[0]) || e;
-  return { x: (t.clientX - r.left) * sx, y: (t.clientY - r.top) * sy };
+  return { x: (t.clientX - m.left) * m.sx, y: (t.clientY - m.top) * m.sy };
 }
 
 // Handle touch+mouse on the resize handles
@@ -1480,6 +1496,7 @@ handlesOverlay.querySelectorAll('.handle').forEach(h => {
     if (layers.selected < 0) return;
     const sel = layers.list[layers.selected];
     if (!sel || sel.locked) return;
+    cachePointerMetrics();
     h.classList.add('grabbing');
     // Open an edit transaction (idempotent — same layer = no-op)
     beginEdit(layers.selected);
@@ -1499,6 +1516,7 @@ handlesOverlay.querySelectorAll('.handle').forEach(h => {
     window.addEventListener('mouseup', onTransformEnd);
     window.addEventListener('touchmove', onTransformMove, { passive: false });
     window.addEventListener('touchend', onTransformEnd);
+    window.addEventListener('touchcancel', onTransformEnd);
   };
   h.addEventListener('mousedown', startTransform);
   h.addEventListener('touchstart', startTransform, { passive: false });
@@ -1510,27 +1528,29 @@ function onTransformMove(e) {
   // Cache pointer; do the actual work on the next frame to coalesce events
   state.transform.pendingPoint = getEvtPoint(e);
   if (state.transform.rafId) return;
-  state.transform.rafId = requestAnimationFrame(() => {
-    state.transform.rafId = null;
-    const sel = layers.list[layers.selected];
-    if (!sel || !state.transform.dir) return;
-    const p = state.transform.pendingPoint;
-    const isCorner = ['nw','ne','se','sw'].includes(state.transform.dir);
-    const b = computeResizeBounds(state.transform.dir, state.transform.startBounds, state.transform.startPointer, p, isCorner);
-    // FAST PATH: don't resample the bitmap during drag — just stash the
-    // preview transform on the layer. renderAll uses ctx.drawImage with
-    // explicit width/height which scales on the GPU. The expensive
-    // resample only happens once on Done, in finalizeResize().
-    sel._preview = {
-      source: state.transform.sourceCanvas,
-      left: Math.round(b.left),
-      top:  Math.round(b.top),
-      width:  Math.max(2, Math.round(b.width)),
-      height: Math.max(2, Math.round(b.height)),
-    };
-    state.didChange = true;
-    renderAll();
-  });
+  state.transform.rafId = requestAnimationFrame(applyTransformFrame);
+}
+
+function applyTransformFrame() {
+  state.transform.rafId = null;
+  const sel = layers.list[layers.selected];
+  if (!sel || !state.transform.dir) return;
+  const p = state.transform.pendingPoint;
+  const isCorner = ['nw','ne','se','sw'].includes(state.transform.dir);
+  const b = computeResizeBounds(state.transform.dir, state.transform.startBounds, state.transform.startPointer, p, isCorner);
+  // FAST PATH: don't resample the bitmap during drag — just stash the
+  // preview transform on the layer. renderAll uses ctx.drawImage with
+  // explicit width/height which scales on the GPU. The expensive
+  // resample only happens once on Done, in finalizeResize().
+  sel._preview = {
+    source: state.transform.sourceCanvas,
+    left: Math.round(b.left),
+    top:  Math.round(b.top),
+    width:  Math.max(2, Math.round(b.width)),
+    height: Math.max(2, Math.round(b.height)),
+  };
+  state.didChange = true;
+  renderAll();
 }
 
 // Convert any pending live preview into a real resampled bitmap.
@@ -1545,7 +1565,10 @@ function finalizeResize(L) {
 }
 function onTransformEnd() {
   if (!state.transform.dir) return;
-  if (state.transform.rafId) { cancelAnimationFrame(state.transform.rafId); state.transform.rafId = null; }
+  if (state.transform.rafId) {
+    cancelAnimationFrame(state.transform.rafId);
+    applyTransformFrame();
+  }
   // Remove grabbing class from any handle
   handlesOverlay.querySelectorAll('.handle.grabbing').forEach(h => h.classList.remove('grabbing'));
   state.transform.dir = null; state.transform.sourceCanvas = null;
@@ -1553,6 +1576,8 @@ function onTransformEnd() {
   window.removeEventListener('mouseup', onTransformEnd);
   window.removeEventListener('touchmove', onTransformMove);
   window.removeEventListener('touchend', onTransformEnd);
+  window.removeEventListener('touchcancel', onTransformEnd);
+  clearPointerMetrics();
   // While an edit transaction is open, the user must press Done/Cancel to
   // commit. Otherwise (defensive — shouldn't happen), push history.
   if (state.didChange && !state.edit.active) { pushHistory(); updateLayersUI(); msg('Resized', 'ok'); }
@@ -1841,11 +1866,13 @@ canvas.addEventListener('mouseleave', onCanvasEnd);
 canvas.addEventListener('touchstart', onCanvasStart, { passive: false });
 canvas.addEventListener('touchmove', onCanvasMove, { passive: false });
 canvas.addEventListener('touchend', onCanvasEnd);
+canvas.addEventListener('touchcancel', onCanvasEnd);
 
 function onCanvasStart(e) {
   if (!state.hasContent) return;
   if (e.touches && e.touches.length > 1) return;
   e.preventDefault();
+  cachePointerMetrics();
   const p = getEvtPoint(e);
   state.startX = p.x; state.startY = p.y; state.lastX = p.x; state.lastY = p.y;
   state.didChange = false;
@@ -1856,6 +1883,7 @@ function onCanvasStart(e) {
   if (state.tool === 'pick') {
     const d = ctx.getImageData(Math.floor(p.x), Math.floor(p.y), 1, 1).data;
     setColor('#' + [d[0],d[1],d[2]].map(v => v.toString(16).padStart(2,'0')).join(''));
+    clearPointerMetrics();
     return;
   }
   if (state.tool === 'move') {
@@ -1883,6 +1911,7 @@ function onCanvasStart(e) {
       state.dragLayerIndex = stickyHit;
       state.dragOffsetX = p.x - (L.left||0);
       state.dragOffsetY = p.y - (L.top||0);
+      state.move.pendingPoint = p;
       beginEdit(stickyHit);
       msg('Moving: ' + L.name);
       return;
@@ -1899,6 +1928,7 @@ function onCanvasStart(e) {
       state.dragLayerIndex = r;
       state.dragOffsetX = p.x - (L.left||0);
       state.dragOffsetY = p.y - (L.top||0);
+      state.move.pendingPoint = p;
       beginEdit(r);
       msg('Selected: ' + L.name, 'ok');
     } else if (!state.edit.active) {
@@ -1906,12 +1936,13 @@ function onCanvasStart(e) {
       // Done or Cancel to leave editing mode
       selectLayer(-1, { quiet: true });
     }
+    clearPointerMetrics();
     return;
   }
   if (state.tool === 'text') {
     const t = prompt('Enter text:', 'Hello');
-    if (!t) return;
-    const a = activeLayerCtx(); if (!a) return;
+    if (!t) { clearPointerMetrics(); return; }
+    const a = activeLayerCtx(); if (!a) { clearPointerMetrics(); return; }
     const lp = toLayerPoint(a.layer, p.x, p.y);
     a.ctx.save();
     a.ctx.fillStyle = state.color;
@@ -1920,10 +1951,10 @@ function onCanvasStart(e) {
     a.ctx.fillText(t, lp.x, lp.y);
     a.ctx.restore();
     state.didChange = true;
-    renderAll(); pushHistory(); return;
+    renderAll(); pushHistory(); clearPointerMetrics(); return;
   }
   if (['rect','circle','line'].includes(state.tool)) {
-    const a = activeLayerCtx(); if (!a) return;
+    const a = activeLayerCtx(); if (!a) { clearPointerMetrics(); return; }
     state.snapshot = a.ctx.getImageData(0, 0, a.layer.canvas.width, a.layer.canvas.height);
   }
   state.isDrawing = true;
@@ -1940,10 +1971,8 @@ function onCanvasMove(e) {
   if (Math.hypot(dx, dy) > 8) state.tapMoved = true;
 
   if (state.tool === 'move') {
-    const L = layers.list[state.dragLayerIndex]; if (!L) return;
-    L.left = clamp(Math.round(p.x - state.dragOffsetX), -L.canvas.width+1, layers.docW-1);
-    L.top  = clamp(Math.round(p.y - state.dragOffsetY), -L.canvas.height+1, layers.docH-1);
-    state.didChange = true; renderAll();
+    state.move.pendingPoint = p;
+    if (!state.move.rafId) state.move.rafId = requestAnimationFrame(applyMoveFrame);
   } else if (state.tool === 'brush' || state.tool === 'eraser') {
     drawStroke(state.lastX, state.lastY, p.x, p.y);
   } else if (['rect','circle','line'].includes(state.tool)) {
@@ -1968,15 +1997,37 @@ function onCanvasMove(e) {
   }
   state.lastX = p.x; state.lastY = p.y;
 }
+
+function applyMoveFrame() {
+  state.move.rafId = null;
+  const L = layers.list[state.dragLayerIndex];
+  const p = state.move.pendingPoint;
+  if (!L || !p) return;
+  const nextLeft = clamp(Math.round(p.x - state.dragOffsetX), -L.canvas.width+1, layers.docW-1);
+  const nextTop = clamp(Math.round(p.y - state.dragOffsetY), -L.canvas.height+1, layers.docH-1);
+  if (nextLeft === (L.left || 0) && nextTop === (L.top || 0)) return;
+  L.left = nextLeft;
+  L.top = nextTop;
+  state.didChange = true;
+  renderAll();
+}
+
 function onCanvasEnd() {
   if (!state.isDrawing) return;
+  const endingMove = state.tool === 'move';
+  if (state.move.rafId) {
+    cancelAnimationFrame(state.move.rafId);
+    applyMoveFrame();
+  }
   state.isDrawing = false; state.snapshot = null; state.dragLayerIndex = -1;
-  renderAll();
+  state.move.pendingPoint = null;
+  if (!endingMove) renderAll();
   // While an edit transaction is open, the user must press Done/Cancel to
   // commit. Drawing-tool strokes (brush, eraser, etc.) still push history
   // immediately because they're not part of a move/resize transaction.
   if (state.didChange && !state.edit.active) pushHistory();
   state.didChange = false;
+  clearPointerMetrics();
 }
 
 // Quick-tap layer selection.
