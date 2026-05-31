@@ -1,5 +1,5 @@
 const $ = (id) => document.getElementById(id);
-const APP_VERSION = '2.0.3';
+const APP_VERSION = '2.0.4';
 console.log('[Vardiko] version', APP_VERSION);
 
 // ─── Status / messaging ─────────────────────────────────────────────────
@@ -1351,6 +1351,7 @@ function onCanvasStart(e) {
     a.ctx.font = Math.max(state.brushSize*2, 24) + 'px Fraunces, serif';
     a.ctx.fillText(t, lp.x, lp.y);
     a.ctx.restore();
+    touchLayerPixels(a.layer);
     state.didChange = true;
     renderAll(); pushHistory(); clearPointerMetrics(); return;
   }
@@ -1402,6 +1403,7 @@ function onCanvasMove(e) {
       a.ctx.ellipse(cx, cy, rx, ry, 0, 0, Math.PI*2); a.ctx.stroke();
     } else { a.ctx.beginPath(); a.ctx.moveTo(s.x, s.y); a.ctx.lineTo(t.x, t.y); a.ctx.stroke(); }
     a.ctx.restore();
+    touchLayerPixels(a.layer);
     state.didChange = true; renderAll();
   }
   state.lastX = p.x; state.lastY = p.y;
@@ -1481,6 +1483,7 @@ function drawStroke(x1, y1, x2, y2) {
   a.ctx.lineWidth = state.brushSize; a.ctx.lineCap = 'round'; a.ctx.lineJoin = 'round';
   a.ctx.beginPath(); a.ctx.moveTo(p1.x, p1.y); a.ctx.lineTo(p2.x, p2.y); a.ctx.stroke();
   a.ctx.restore();
+  touchLayerPixels(a.layer);
   state.didChange = true; renderAll();
 }
 
@@ -1510,6 +1513,7 @@ $('applyAdjust').onclick = () => {
     tc.filter = `brightness(${a.brightness}%) contrast(${a.contrast}%) saturate(${a.saturation}%) blur(${a.blur}px)`;
     tc.drawImage(L.canvas, 0, 0);
     const lc = L.canvas.getContext('2d'); lc.clearRect(0,0,L.canvas.width,L.canvas.height); lc.drawImage(t, 0, 0);
+    touchLayerPixels(L);
   }
   resetAdjustments(); renderAll(); updateLayersUI(); pushHistory();
   msg('Adjustments applied', 'ok');
@@ -1528,6 +1532,7 @@ document.querySelectorAll('[data-filter]').forEach(btn => {
       case 'vintage': for (let i=0;i<d.length;i+=4){d[i]=Math.min(255,d[i]*0.9+30);d[i+1]=Math.min(255,d[i+1]*0.85+20);d[i+2]=Math.min(255,d[i+2]*0.7+10);} break;
     }
     a.ctx.putImageData(img, 0, 0);
+    touchLayerPixels(a.layer);
     renderAll(); updateLayersUI(); pushHistory();
     msg('Filter: ' + btn.dataset.filter, 'ok');
   };
@@ -1555,6 +1560,7 @@ function flipAll(dir) {
     else { tc.translate(0, L.canvas.height); tc.scale(1, -1); }
     tc.drawImage(L.canvas, 0, 0);
     const lc = L.canvas.getContext('2d'); lc.clearRect(0,0,L.canvas.width,L.canvas.height); lc.drawImage(t, 0, 0);
+    touchLayerPixels(L);
   }
   renderAll(); updateLayersUI(); pushHistory();
 }
@@ -2265,11 +2271,45 @@ function attachLongPressDrag(row, gripEl, layerStackIndex) {
 }
 
 // ─── History ────────────────────────────────────────────────────────────
-function snapshotLayers() {
+// Snapshots are heavy — a full-resolution canvas clone per layer — so we avoid
+// re-cloning bitmaps that didn't change between steps. Each snapshot record
+// keeps a WeakRef to the LIVE canvas it copied plus a pixel revision; the next
+// push reuses the existing (immutable) clone whenever the live layer still
+// points at that same canvas with the same revision. A metadata-only edit
+// (move, opacity, visibility, reorder…) therefore clones nothing.
+//
+// Invariant: a layer's pixels change  ⟺  EITHER L.canvas is reassigned to a new
+// canvas object (auto-detected here) OR touchLayerPixels(L) is called for an
+// in-place draw. Drawing into an EXISTING layer canvas without calling
+// touchLayerPixels will make undo/redo show stale pixels.
+function touchLayerPixels(L) { if (L) L._rev = (L._rev || 0) + 1; }
+
+// Cap on retained snapshot pixels (shared clones counted once). Protects
+// low-memory phones from OOM when editing large multi-layer documents.
+const HISTORY_PIXEL_BUDGET_BYTES = 192 * 1024 * 1024;
+
+function snapshotLayers(prevEntry) {
+  // Reuse map: live-canvas object → its record in the step we're branching from.
+  const reuse = new Map();
+  if (prevEntry) for (const r of prevEntry.layers) {
+    const src = r.srcRef && r.srcRef.deref();
+    if (src) reuse.set(src, r);
+  }
   return layers.list.map(L => {
-    const s = makeCanvas(L.canvas.width, L.canvas.height);
-    s.getContext('2d').drawImage(L.canvas, 0, 0);
-    const out = { name: L.name, canvas: s, left: L.left, top: L.top, opacity: L.opacity, visible: L.visible, blendMode: L.blendMode, locked: !!L.locked };
+    const rev = L._rev || 0;
+    const prev = reuse.get(L.canvas);
+    let clone;
+    if (prev && prev.rev === rev) {
+      clone = prev.canvas;            // bitmap unchanged since last step — share the clone
+    } else {
+      clone = makeCanvas(L.canvas.width, L.canvas.height);
+      clone.getContext('2d').drawImage(L.canvas, 0, 0);
+    }
+    const out = {
+      name: L.name, canvas: clone, srcRef: new WeakRef(L.canvas), rev,
+      left: L.left, top: L.top, opacity: L.opacity, visible: L.visible,
+      blendMode: L.blendMode, locked: !!L.locked
+    };
     if (L.text) out.text = JSON.parse(JSON.stringify(L.text));
     return out;
   });
@@ -2283,11 +2323,29 @@ function cloneTree(nodes) {
     return { ...n };
   });
 }
+function historyPixelBytes() {
+  // Shared clones (unchanged bitmaps across steps) are counted once.
+  const seen = new Set(); let bytes = 0;
+  for (const e of state.history) for (const r of e.layers) {
+    if (seen.has(r.canvas)) continue;
+    seen.add(r.canvas);
+    bytes += r.canvas.width * r.canvas.height * 4;
+  }
+  return bytes;
+}
+function trimHistory() {
+  while (state.history.length > state.maxHistory) state.history.shift();
+  // Always keep at least one step so the current state stays restorable.
+  while (state.history.length > 1 && historyPixelBytes() > HISTORY_PIXEL_BUDGET_BYTES) {
+    state.history.shift();
+  }
+}
 function pushHistory() {
   if (!state.hasContent) return;
+  const prevEntry = state.history[state.historyIndex];   // step we're branching from (may be undefined)
   state.history = state.history.slice(0, state.historyIndex + 1);
-  state.history.push({ layers: snapshotLayers(), tree: cloneTree(layers.tree), selected: layers.selected, docW: layers.docW, docH: layers.docH });
-  if (state.history.length > state.maxHistory) state.history.shift();
+  state.history.push({ layers: snapshotLayers(prevEntry), tree: cloneTree(layers.tree), selected: layers.selected, docW: layers.docW, docH: layers.docH });
+  trimHistory();
   state.historyIndex = state.history.length - 1;
 }
 function undo() {
@@ -2312,9 +2370,16 @@ function restoreHistory() {
     state.edit.active = false; state.edit.layerIndex = -1; state.edit.snapshot = null;
     editActionsEl.classList.remove('visible');
   }
-  layers.list = e.layers.map(L => {
-    const c = makeCanvas(L.canvas.width, L.canvas.height); c.getContext('2d').drawImage(L.canvas, 0, 0);
-    return { ...L, canvas: c };
+  layers.list = e.layers.map(r => {
+    const c = makeCanvas(r.canvas.width, r.canvas.height); c.getContext('2d').drawImage(r.canvas, 0, 0);
+    // Build a fresh live layer — don't spread the record (it carries srcRef/rev
+    // and a shared text object that live edits must not mutate).
+    const L = {
+      name: r.name, canvas: c, left: r.left, top: r.top, opacity: r.opacity,
+      visible: r.visible, blendMode: r.blendMode, locked: !!r.locked, _rev: r.rev || 0
+    };
+    if (r.text) L.text = JSON.parse(JSON.stringify(r.text));
+    return L;
   });
   layers.tree = e.tree ? cloneTree(e.tree) : (buildFlatTree(), layers.tree);
   layers.selected = e.selected;
